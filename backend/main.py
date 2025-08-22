@@ -11,6 +11,8 @@ import subprocess
 import aiofiles
 from typing import List, Optional
 import json
+import time
+from fastapi import Request
 
 # Add current directory to Python path for service imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -51,8 +53,8 @@ def get_service(service_name):
         from services.scene_detection import SceneDetectionService
         return SceneDetectionService()
     elif service_name == "voice_translate":
-        from services.voice_translate import VoiceTranslationService
-        return VoiceTranslationService()
+        from services.voice_translate_optimized import OptimizedVoiceTranslationService
+        return OptimizedVoiceTranslationService()
     elif service_name == "style_filters":
         from services.style_filters import StyleFilterService
         return StyleFilterService()
@@ -62,6 +64,9 @@ def get_service(service_name):
     elif service_name == "auto_cut_silence":
         from services.auto_cut_silence import AutoCutSilenceService
         return AutoCutSilenceService()
+    elif service_name == "video_compilation":
+        from services.video_compilation import VideoCompilationService
+        return VideoCompilationService()
     else:
         raise ValueError(f"Unknown service: {service_name}")
 
@@ -264,15 +269,17 @@ async def _process_scene_detection(upload_id, processing_status, threshold):
 async def process_voice_translation(
     upload_id: str = Query(..., description="Upload ID"),
     background_tasks: BackgroundTasks = None,
-    target_language: str = "en",
-    voice_type: str = "neutral"
+    target_language: str = "es",
+    voice_type: str = "female",
+    add_subtitles: bool = True
 ):
-    """Translate speech and generate new audio"""
+    """Translate speech and generate new audio with optional subtitles"""
     if upload_id not in processing_status:
         raise HTTPException(status_code=404, detail="Upload ID not found")
     
     processing_status[upload_id]["status"] = "processing"
-    processing_status[upload_id]["progress"] = 10
+    processing_status[upload_id]["progress"] = 5
+    processing_status[upload_id]["message"] = "Starting optimized translation..."
     
     if background_tasks is None:
         background_tasks = BackgroundTasks()
@@ -281,15 +288,16 @@ async def process_voice_translation(
         upload_id,
         processing_status,
         target_language,
-        voice_type
+        voice_type,
+        add_subtitles
     )
     
-    return {"message": "Voice translation processing started", "upload_id": upload_id}
+    return {"message": "Optimized voice translation processing started", "upload_id": upload_id}
 
-async def _process_voice_translation(upload_id, processing_status, target_language, voice_type):
+async def _process_voice_translation(upload_id, processing_status, target_language, voice_type, add_subtitles):
     """Background task for voice translation"""
     service = get_service("voice_translate")
-    await service.process(upload_id, processing_status, target_language, voice_type)
+    await service.process(upload_id, processing_status, target_language, voice_type, add_subtitles)
 
 @app.post("/process/style")
 async def process_style_filters(
@@ -325,9 +333,8 @@ async def _process_style_filters(upload_id, processing_status, style, intensity)
 @app.post("/process/object-remove")
 async def process_object_removal(
     upload_id: str = Query(..., description="Upload ID"),
-    background_tasks: BackgroundTasks = None,
-    object_type: str = "person",
-    replacement_method: str = "inpaint"
+    bounding_boxes: str = Query(None, description="Bounding boxes in format 'x1,y1,x2,y2;x1,y1,x2,y2'"),
+    background_tasks: BackgroundTasks = None
 ):
     """Remove unwanted objects from video"""
     if upload_id not in processing_status:
@@ -342,16 +349,55 @@ async def process_object_removal(
         _process_object_removal,
         upload_id,
         processing_status,
-        object_type,
-        replacement_method
+        bounding_boxes
     )
     
     return {"message": "Object removal processing started", "upload_id": upload_id}
 
-async def _process_object_removal(upload_id, processing_status, object_type, replacement_method):
+async def _process_object_removal(upload_id, processing_status, bounding_boxes):
     """Background task for object removal"""
     service = get_service("object_removal")
-    await service.process(upload_id, processing_status, object_type, replacement_method)
+    await service.process(upload_id, processing_status, bounding_boxes)
+
+@app.post("/process/video-compilation")
+async def process_video_compilation(
+    upload_ids: List[str] = Query(..., description="List of upload IDs (max 5)"),
+    background_tasks: BackgroundTasks = None,
+    max_duration: int = 300,
+    transition_style: str = "fade",
+    preset: str = "youtube_shorts"
+):
+    """Create compilation video from multiple uploaded videos"""
+    if len(upload_ids) > 5:
+        raise HTTPException(status_code=400, detail="Maximum 5 videos allowed")
+    
+    # Validate all upload IDs exist
+    for upload_id in upload_ids:
+        if upload_id not in processing_status:
+            raise HTTPException(status_code=404, detail=f"Upload ID {upload_id} not found")
+    
+    # Use first upload ID as main for status tracking
+    main_upload_id = upload_ids[0]
+    processing_status[main_upload_id]["status"] = "processing"
+    processing_status[main_upload_id]["progress"] = 10
+    
+    if background_tasks is None:
+        background_tasks = BackgroundTasks()
+    background_tasks.add_task(
+        _process_video_compilation,
+        upload_ids,
+        processing_status,
+        max_duration,
+        transition_style,
+        preset
+    )
+    
+    return {"message": "Video compilation processing started", "main_upload_id": main_upload_id}
+
+async def _process_video_compilation(upload_ids, processing_status, max_duration, transition_style, preset):
+    """Background task for video compilation"""
+    service = get_service("video_compilation")
+    await service.process(upload_ids, processing_status, max_duration, transition_style, preset)
 
 @app.get("/status/{upload_id}")
 async def get_processing_status(upload_id: str):
@@ -404,6 +450,18 @@ async def download_by_file_id(file_id: str):
             pass
 
     return FileResponse(path=file_path, filename=file_path.name, media_type="video/mp4", background=BackgroundTask(_cleanup))
+
+@app.get("/presets/compilation")
+async def get_compilation_presets():
+    """Get available compilation presets for different social media platforms"""
+    service = get_service("video_compilation")
+    return service.get_compilation_presets()
+
+@app.get("/presets/transitions")
+async def get_transition_styles():
+    """Get available transition styles"""
+    service = get_service("video_compilation")
+    return service.get_transition_styles()
 
 @app.get("/downloads/{upload_id}")
 async def list_downloads(upload_id: str):
@@ -475,6 +533,48 @@ async def cleanup_files(upload_id: str):
             
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Cleanup failed: {str(e)}")
+
+@app.post("/detect-objects")
+async def detect_objects(request: Request):
+    """Detect objects in uploaded image and return bounding boxes"""
+    try:
+        # Get uploaded image
+        form = await request.form()
+        image_file = form.get("image")
+        
+        if not image_file:
+            raise HTTPException(status_code=400, detail="No image provided")
+        
+        # Save image temporarily
+        temp_dir = Path("temp")
+        temp_dir.mkdir(exist_ok=True)
+        
+        image_path = temp_dir / f"detection_{int(time.time())}.jpg"
+        with open(image_path, "wb") as f:
+            f.write(image_file.file.read())
+        
+        # Use object removal service to detect objects
+        from services.object_removal import ObjectRemovalService
+        service = ObjectRemovalService()
+        
+        # Read image with OpenCV
+        import cv2
+        frame = cv2.imread(str(image_path))
+        
+        if frame is None:
+            raise HTTPException(status_code=400, detail="Invalid image format")
+        
+        # Detect objects
+        detected_objects = service.detect_objects(frame)
+        
+        # Clean up temp file
+        image_path.unlink(missing_ok=True)
+        
+        return detected_objects
+        
+    except Exception as e:
+        print(f"Object detection error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn

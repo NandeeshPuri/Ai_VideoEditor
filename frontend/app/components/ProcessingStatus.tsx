@@ -137,6 +137,28 @@ export default function ProcessingStatus({ status, uploadId }: ProcessingStatusP
           </div>
         )}
 
+        {/* Voice Translation Results */}
+        {status.status === 'completed' && status.target_language && (
+          <div className="p-4 bg-blue-50 border border-blue-200 rounded-lg">
+            <div className="flex items-center space-x-2 mb-3">
+              <span className="text-blue-600">🌍</span>
+              <h3 className="font-medium text-blue-800">Translation Results</h3>
+            </div>
+            <div className="space-y-2 text-sm">
+              <p><strong>Target Language:</strong> {status.target_language}</p>
+              {status.original_text && (
+                <p><strong>Original Text:</strong> {status.original_text.substring(0, 100)}...</p>
+              )}
+              {status.translated_text && (
+                <p><strong>Translated Text:</strong> {status.translated_text.substring(0, 100)}...</p>
+              )}
+              {status.subtitle_translated && (
+                <p className="text-green-600"><strong>✅ Subtitles translated and burned in</strong></p>
+              )}
+            </div>
+          </div>
+        )}
+
         {/* Downloads Section */}
         {status.status === 'completed' && (
           <div className="space-y-3">

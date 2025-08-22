@@ -8,6 +8,7 @@ interface FeatureSelectorProps {
   selectedStyle?: string
   onStyleChange?: (style: string) => void
   disabled?: boolean
+  mode?: 'single' | 'compilation'
 }
 
 const AI_FEATURES = [
@@ -59,17 +60,30 @@ const AI_FEATURES = [
     description: 'Remove unwanted objects from video',
     icon: '🧹',
     category: 'Visual'
+  },
+  {
+    id: 'video-compilation',
+    name: 'Video Compilation',
+    description: 'AI-powered compilation from multiple videos with best parts detection',
+    icon: '🎞️',
+    category: 'Compilation'
   }
 ]
 
-export default function FeatureSelector({ 
-  selectedFeatures, 
-  onFeatureToggle, 
+export default function FeatureSelector({
+  selectedFeatures,
+  onFeatureToggle,
   selectedStyle = 'cartoon',
   onStyleChange,
-  disabled 
+  disabled,
+  mode = 'single'
 }: FeatureSelectorProps) {
-  const groupedFeatures = AI_FEATURES.reduce((acc, feature) => {
+  // Filter features based on mode
+  const filteredFeatures = mode === 'compilation'
+    ? [] // No features needed in compilation mode since VideoCompilationSelector handles everything
+    : AI_FEATURES.filter(feature => feature.id !== 'video-compilation')
+
+  const groupedFeatures = filteredFeatures.reduce((acc, feature) => {
     if (!acc[feature.category]) {
       acc[feature.category] = []
     }
@@ -77,9 +91,16 @@ export default function FeatureSelector({
     return acc
   }, {} as Record<string, typeof AI_FEATURES>)
 
+  // Don't render anything in compilation mode since VideoCompilationSelector handles everything
+  if (mode === 'compilation') {
+    return null
+  }
+
   return (
     <div className="bg-white rounded-lg p-6 shadow-lg">
-      <h2 className="text-xl font-semibold text-gray-900 mb-4">AI Features</h2>
+      <h2 className="text-xl font-semibold text-gray-900 mb-4">
+        AI Features
+      </h2>
 
       <div className="space-y-6">
         {Object.entries(groupedFeatures).map(([category, features]) => (
@@ -131,13 +152,15 @@ export default function FeatureSelector({
         </div>
       )}
 
-      {/* Style Filter Selector */}
-      <StyleFilterSelector
-        isVisible={selectedFeatures.includes('style')}
-        selectedStyle={selectedStyle}
-        onStyleChange={onStyleChange || (() => {})}
-        disabled={disabled}
-      />
+      {/* Style Filter Selector - Only in Single Mode */}
+      {mode === 'single' && (
+        <StyleFilterSelector
+          isVisible={selectedFeatures.includes('style')}
+          selectedStyle={selectedStyle}
+          onStyleChange={onStyleChange || (() => { })}
+          disabled={disabled}
+        />
+      )}
     </div>
   )
 }

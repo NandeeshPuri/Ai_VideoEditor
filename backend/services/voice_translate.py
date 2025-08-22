@@ -17,11 +17,11 @@ class VoiceTranslationService:
         self.translator = Translator()
         self.tts = None  # lazy load
     
-    async def process(self, upload_id: str, processing_status: dict, target_language: str = "es", voice_gender: str = "female"):
-        """Process voice translation and dubbing"""
+    async def process(self, upload_id: str, processing_status: dict, target_language: str = "es", voice_type: str = "female"):
+        """Process voice translation and dubbing with subtitle translation"""
         try:
             # Update status
-            processing_status[upload_id]["progress"] = 20
+            processing_status[upload_id]["progress"] = 10
             processing_status[upload_id]["status"] = "processing"
             
             # Get file paths
@@ -30,31 +30,42 @@ class VoiceTranslationService:
             output_dir.mkdir(parents=True, exist_ok=True)
             
             # Extract audio
-            processing_status[upload_id]["progress"] = 30
+            processing_status[upload_id]["progress"] = 20
             audio_path = self._extract_audio(str(file_path))
             
             # Transcribe audio
-            processing_status[upload_id]["progress"] = 40
+            processing_status[upload_id]["progress"] = 30
             transcription = self._transcribe_audio(audio_path)
             
             # Translate text
-            processing_status[upload_id]["progress"] = 50
+            processing_status[upload_id]["progress"] = 40
             translated_text = self._translate_text(transcription, target_language)
             
             # Generate new audio
-            processing_status[upload_id]["progress"] = 60
-            new_audio_path = self._generate_speech(translated_text, target_language, voice_gender)
+            processing_status[upload_id]["progress"] = 50
+            new_audio_path = self._generate_speech(translated_text, target_language, voice_type)
             
-            # Replace audio in video
-            processing_status[upload_id]["progress"] = 80
+            # Check if video has existing subtitles and translate them
+            processing_status[upload_id]["progress"] = 60
+            subtitle_path = None
+            if self._has_subtitles(str(file_path)):
+                subtitle_path = self._extract_and_translate_subtitles(str(file_path), target_language, upload_id)
+            else:
+                # Generate new subtitles for the translated audio
+                subtitle_path = self._generate_translated_subtitles(translated_text, target_language, upload_id)
+            
+            # Replace audio in video and add translated subtitles if available
+            processing_status[upload_id]["progress"] = 70
             output_path = output_dir / f"{upload_id}_dubbed_{target_language}.mp4"
-            self._replace_audio(str(file_path), new_audio_path, str(output_path))
+            self._replace_audio_with_subtitles(str(file_path), new_audio_path, str(output_path), subtitle_path)
             
             # Clean up temporary files
             if os.path.exists(audio_path):
                 os.remove(audio_path)
             if os.path.exists(new_audio_path):
                 os.remove(new_audio_path)
+            if subtitle_path and os.path.exists(subtitle_path):
+                os.remove(subtitle_path)
             
             # Update status
             processing_status[upload_id]["progress"] = 100
@@ -63,11 +74,14 @@ class VoiceTranslationService:
             processing_status[upload_id]["original_text"] = transcription
             processing_status[upload_id]["translated_text"] = translated_text
             processing_status[upload_id]["target_language"] = target_language
+            processing_status[upload_id]["subtitle_translated"] = subtitle_path is not None
             
         except Exception as e:
             processing_status[upload_id]["status"] = "error"
             processing_status[upload_id]["error"] = str(e)
             print(f"Voice translation error: {e}")
+            import traceback
+            traceback.print_exc()
     
     def _extract_audio(self, video_path: str) -> str:
         """Extract audio from video using FFmpeg"""
@@ -86,9 +100,12 @@ class VoiceTranslationService:
     
     def _transcribe_audio(self, audio_path: str) -> str:
         """Transcribe audio using Whisper"""
-        if self.whisper_model is None:
-            self.whisper_model = whisper.load_model("base")
-        result = self.whisper_model.transcribe(audio_path)
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            if self.whisper_model is None:
+                self.whisper_model = whisper.load_model("base")
+            result = self.whisper_model.transcribe(audio_path)
         return result["text"].strip()
     
     def _translate_text(self, text: str, target_language: str) -> str:
@@ -112,7 +129,7 @@ class VoiceTranslationService:
             print(f"Translation error: {e}")
             return text
     
-    def _generate_speech(self, text: str, language: str, voice_gender: str) -> str:
+    def _generate_speech(self, text: str, language: str, voice_type: str) -> str:
         """Generate speech from translated text using TTS"""
         try:
             if self.tts is None:
@@ -211,6 +228,181 @@ class VoiceTranslationService:
             # Convert to bytes
             audio_bytes = struct.pack(f'<{num_samples}h', *silent_data)
             wav_file.writeframes(audio_bytes)
+    
+    def _has_subtitles(self, video_path: str) -> bool:
+        """Check if video has embedded subtitles"""
+        try:
+            cmd = [
+                'ffprobe', '-v', 'quiet', '-select_streams', 's',
+                '-show_entries', 'stream=index', '-of', 'csv=p=0',
+                video_path
+            ]
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            return len(result.stdout.strip()) > 0
+        except Exception:
+            return False
+    
+    def _extract_and_translate_subtitles(self, video_path: str, target_language: str, upload_id: str) -> str:
+        """Extract subtitles from video and translate them"""
+        try:
+            # Extract subtitles
+            subtitle_temp = tempfile.NamedTemporaryFile(suffix=".srt", delete=False)
+            subtitle_temp.close()
+            
+            cmd = [
+                'ffmpeg', '-i', video_path,
+                '-map', '0:s:0',  # Extract first subtitle stream
+                '-c:s', 'srt',
+                '-y', subtitle_temp.name
+            ]
+            
+            subprocess.run(cmd, capture_output=True, check=True)
+            
+            # Read and translate subtitles
+            with open(subtitle_temp.name, 'r', encoding='utf-8') as f:
+                subtitle_content = f.read()
+            
+            # Translate subtitle content
+            translated_subtitle = self._translate_subtitle_content(subtitle_content, target_language)
+            
+            # Save translated subtitles
+            translated_subtitle_path = tempfile.NamedTemporaryFile(suffix=".srt", delete=False)
+            translated_subtitle_path.close()
+            
+            with open(translated_subtitle_path.name, 'w', encoding='utf-8') as f:
+                f.write(translated_subtitle)
+            
+            # Clean up original subtitle file
+            os.remove(subtitle_temp.name)
+            
+            return translated_subtitle_path.name
+            
+        except Exception as e:
+            print(f"Subtitle extraction/translation error: {e}")
+            return None
+    
+    def _translate_subtitle_content(self, subtitle_content: str, target_language: str) -> str:
+        """Translate SRT subtitle content"""
+        try:
+            lines = subtitle_content.split('\n')
+            translated_lines = []
+            
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    translated_lines.append(line)
+                    continue
+                
+                # Skip timestamp lines and subtitle numbers
+                if (line.isdigit() or 
+                    '-->' in line or 
+                    line.startswith('WEBVTT') or
+                    line.startswith('NOTE')):
+                    translated_lines.append(line)
+                    continue
+                
+                # Translate subtitle text
+                if line:
+                    translated_text = self._translate_text(line, target_language)
+                    translated_lines.append(translated_text)
+                else:
+                    translated_lines.append(line)
+            
+            return '\n'.join(translated_lines)
+            
+        except Exception as e:
+            print(f"Subtitle translation error: {e}")
+            return subtitle_content
+    
+    def _generate_translated_subtitles(self, translated_text: str, target_language: str, upload_id: str) -> str:
+        """Generate SRT subtitles for translated text"""
+        try:
+            # Split translated text into sentences for subtitle timing
+            sentences = translated_text.split('.')
+            sentences = [s.strip() for s in sentences if s.strip()]
+            
+            # Create SRT content
+            srt_content = []
+            subtitle_number = 1
+            start_time = 0
+            duration_per_sentence = 3.0  # 3 seconds per sentence
+            
+            for sentence in sentences:
+                if not sentence:
+                    continue
+                
+                # Calculate timestamps
+                start_seconds = start_time
+                end_seconds = start_time + duration_per_sentence
+                
+                # Format timestamps
+                start_timestamp = self._seconds_to_srt_time(start_seconds)
+                end_timestamp = self._seconds_to_srt_time(end_seconds)
+                
+                # Add subtitle entry
+                srt_content.append(f"{subtitle_number}")
+                srt_content.append(f"{start_timestamp} --> {end_timestamp}")
+                srt_content.append(sentence)
+                srt_content.append("")
+                
+                subtitle_number += 1
+                start_time += duration_per_sentence
+            
+            # Save to temporary file
+            subtitle_path = tempfile.NamedTemporaryFile(suffix=".srt", delete=False)
+            subtitle_path.close()
+            
+            with open(subtitle_path.name, 'w', encoding='utf-8') as f:
+                f.write('\n'.join(srt_content))
+            
+            return subtitle_path.name
+            
+        except Exception as e:
+            print(f"Subtitle generation error: {e}")
+            return None
+    
+    def _seconds_to_srt_time(self, seconds: float) -> str:
+        """Convert seconds to SRT timestamp format"""
+        hours = int(seconds // 3600)
+        minutes = int((seconds % 3600) // 60)
+        secs = int(seconds % 60)
+        millisecs = int((seconds % 1) * 1000)
+        return f"{hours:02d}:{minutes:02d}:{secs:02d},{millisecs:03d}"
+    
+    def _replace_audio_with_subtitles(self, video_path: str, audio_path: str, output_path: str, subtitle_path: str = None):
+        """Replace audio in video and optionally burn in translated subtitles"""
+        try:
+            if subtitle_path and os.path.exists(subtitle_path):
+                # Burn in translated subtitles
+                cmd = [
+                    'ffmpeg', '-i', video_path, '-i', audio_path,
+                    '-vf', f"scale=-2:'if(gte(ih,720),ih,720)',subtitles={subtitle_path}:force_style='FontSize=24,PrimaryColour=&Hffffff,OutlineColour=&H000000,BackColour=&H000000,Outline=2,Shadow=1'",
+                    '-map', '0:v:0', '-map', '1:a:0',
+                    '-c:v', 'libx264', '-preset', 'medium', '-crf', '23',
+                    '-c:a', 'aac',
+                    '-shortest',
+                    '-movflags', '+faststart',
+                    '-y', output_path
+                ]
+            else:
+                # Just replace audio without subtitles
+                cmd = [
+                    'ffmpeg', '-i', video_path, '-i', audio_path,
+                    '-vf', "scale=-2:'if(gte(ih,720),ih,720)'",
+                    '-map', '0:v:0', '-map', '1:a:0',
+                    '-c:v', 'libx264', '-preset', 'medium', '-crf', '23',
+                    '-c:a', 'aac',
+                    '-shortest',
+                    '-movflags', '+faststart',
+                    '-y', output_path
+                ]
+
+            subprocess.run(cmd, check=True, capture_output=True)
+            
+        except subprocess.CalledProcessError as e:
+            print(f"FFmpeg error: {e}")
+            # Fallback to simple audio replacement
+            self._replace_audio(video_path, audio_path, output_path)
     
     def _replace_audio(self, video_path: str, audio_path: str, output_path: str):
         """Replace audio in video using FFmpeg and ensure at least 720p height."""
