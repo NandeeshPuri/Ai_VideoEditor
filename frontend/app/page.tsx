@@ -5,6 +5,7 @@ import VideoUploader from './components/VideoUploader'
 import FeatureSelector from './components/FeatureSelector'
 import ProcessingStatus from './components/ProcessingStatus'
 import VideoPreview from './components/VideoPreview'
+import CompilationPreview from './components/CompilationPreview'
 import VoiceTranslationSelector from './components/VoiceTranslationSelector'
 import VideoCompilationSelector from './components/VideoCompilationSelector'
 import ObjectRemovalSelector from './components/ObjectRemovalSelector'
@@ -32,6 +33,8 @@ export default function Home() {
     const [maxDuration, setMaxDuration] = useState<number>(60)
     const [transitionStyle, setTransitionStyle] = useState<string>('fade')
     const [selectedPreset, setSelectedPreset] = useState<string>('youtube_shorts')
+    const [applyEffects, setApplyEffects] = useState<boolean>(false)
+    const [effectType, setEffectType] = useState<string>('none')
     const [isProcessing, setIsProcessing] = useState(false)
     const [processingStatus, setProcessingStatus] = useState<any>(null)
     const [objectRemovalBoxes, setObjectRemovalBoxes] = useState<BoundingBox[]>([])
@@ -95,7 +98,7 @@ export default function Home() {
         try {
             if (mode === 'compilation') {
                 // Single compilation request
-                const url = `http://localhost:8000/process/video-compilation?upload_ids=${selectedVideos.join(',')}&max_duration=${maxDuration}&transition_style=${transitionStyle}&preset=${selectedPreset}`
+                const url = `http://localhost:8000/process/video-compilation?upload_ids=${selectedVideos.join(',')}&max_duration=${maxDuration}&transition_style=${transitionStyle}&preset=${selectedPreset}&apply_effects=${applyEffects}&effect_type=${effectType}`
 
                 const response = await fetch(url, {
                     method: 'POST',
@@ -235,6 +238,38 @@ export default function Home() {
                             />
                         )}
 
+                        {mode === 'compilation' && selectedVideos.length > 0 && (
+                            <CompilationPreview
+                                uploadId={selectedVideos[0]}
+                                processingStatus={processingStatus}
+                                selectedVideos={selectedVideos}
+                            />
+                        )}
+
+                        {mode === 'compilation' && selectedVideos.length === 0 && uploadedVideos.length > 0 && (
+                            <div className="bg-white rounded-lg p-6 shadow-lg">
+                                <h2 className="text-xl font-semibold text-gray-900 mb-4 flex items-center">
+                                    <span className="mr-2">📱</span>
+                                    Compilation Setup
+                                </h2>
+                                <div className="bg-gradient-to-r from-purple-50 to-blue-50 border border-purple-200 rounded-lg p-4">
+                                    <p className="text-gray-700 mb-3">
+                                        You have uploaded {uploadedVideos.length} video(s). Select videos from the right panel to create your compilation.
+                                    </p>
+                                    <div className="grid grid-cols-2 gap-4 text-sm">
+                                        <div>
+                                            <span className="font-medium text-gray-700">Available Videos:</span>
+                                            <p className="text-gray-900">{uploadedVideos.length}</p>
+                                        </div>
+                                        <div>
+                                            <span className="font-medium text-gray-700">Selected Videos:</span>
+                                            <p className="text-gray-900">0</p>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+
                         {/* Object Removal Selector - Only show when feature is selected */}
                         {mode === 'single' && selectedFeatures.includes('object-remove') && uploadedFile && (
                             <ObjectRemovalSelector
@@ -273,6 +308,8 @@ export default function Home() {
                                 onMaxDurationChange={setMaxDuration}
                                 onTransitionStyleChange={setTransitionStyle}
                                 onPresetChange={setSelectedPreset}
+                                onApplyEffectsChange={setApplyEffects}
+                                onEffectTypeChange={setEffectType}
                                 disabled={isProcessing}
                                 availableUploadIds={uploadedVideos.map(v => v.id)}
                             />
