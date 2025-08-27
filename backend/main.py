@@ -67,6 +67,12 @@ def get_service(service_name):
     elif service_name == "video_compilation":
         from services.video_compilation import VideoCompilationService
         return VideoCompilationService()
+    elif service_name == "ai_editing_suggestions":
+        from services.ai_editing_suggestions import AIEditingSuggestionsService
+        return AIEditingSuggestionsService()
+    elif service_name == "script_analysis":
+        from services.script_analysis import ScriptAnalysisService
+        return ScriptAnalysisService()
     else:
         raise ValueError(f"Unknown service: {service_name}")
 
@@ -574,6 +580,85 @@ async def detect_objects(request: Request):
         
     except Exception as e:
         print(f"Object detection error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/process-ai-editing")
+async def process_ai_editing(request: Request):
+    """Process AI editing suggestions"""
+    try:
+        data = await request.json()
+        upload_id = data.get("upload_id")
+        features = data.get("features", [])
+        script_content = data.get("script_content")
+        
+        if not upload_id:
+            raise HTTPException(status_code=400, detail="upload_id is required")
+        
+        # Find the uploaded video file
+        video_files = list(UPLOAD_DIR.glob(f"{upload_id}*"))
+        if not video_files:
+            raise HTTPException(status_code=404, detail="Video file not found")
+        
+        video_path = str(video_files[0])
+        
+        # Initialize services based on requested features
+        suggestions = []
+        video_features = []
+        
+        if "ai_editing_suggestions" in features:
+            ai_service = get_service("ai_editing_suggestions")
+            suggestions = await ai_service.generate_editing_suggestions(video_path, script_content or "")
+            video_features = await ai_service.analyze_video_features(video_path)
+        
+        if "script_analysis" in features and script_content:
+            script_service = get_service("script_analysis")
+            script_suggestions = script_service.analyze_script(script_content)
+            suggestions.extend(script_suggestions)
+        
+        if "subtitle_generation" in features and script_content:
+            subtitle_service = get_service("subtitles")
+            # Generate subtitles from script
+            srt_path = subtitle_service.generate_subtitles_from_text(script_content, video_path)
+            # Burn subtitles into video
+            output_path = PROCESSED_DIR / f"{upload_id}_with_subtitles.mp4"
+            subtitle_service.burn_subtitles(video_path, srt_path, str(output_path))
+        
+        # Count suggestions by type
+        cut_suggestions = len([s for s in suggestions if hasattr(s, 'suggestion_type') and s.suggestion_type == "cut"])
+        transition_suggestions = len([s for s in suggestions if hasattr(s, 'suggestion_type') and s.suggestion_type == "transition"])
+        
+        return {
+            "success": True,
+            "suggestions": [
+                {
+                    "timestamp": s.timestamp,
+                    "suggestion_type": s.suggestion_type,
+                    "description": getattr(s, 'description', s.reason),  # Use reason as description if description doesn't exist
+                    "confidence": s.confidence,
+                    "reasoning": getattr(s, 'reasoning', s.reason),  # Use reason as reasoning if reasoning doesn't exist
+                    "metadata": getattr(s, 'metadata', {})
+                }
+                for s in suggestions
+            ],
+            "video_features": [
+                {
+                    "timestamp": f.timestamp,
+                    "feature_type": f.feature_type,
+                    "confidence": f.confidence,
+                    "description": getattr(f, 'description', f.feature_type),  # Use feature_type as description if description doesn't exist
+                    "metadata": getattr(f, 'metadata', {})
+                }
+                for f in video_features
+            ],
+            "total_suggestions": len(suggestions),
+            "cut_suggestions": cut_suggestions,
+            "transition_suggestions": transition_suggestions
+        }
+        
+    except Exception as e:
+        print(f"AI editing error: {e}")
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":

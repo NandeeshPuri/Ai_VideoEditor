@@ -13,6 +13,13 @@ interface FeatureSelectorProps {
 
 const AI_FEATURES = [
   {
+    id: 'ai-editing-suggestions',
+    name: 'AI Film Editing Suggestions',
+    description: 'Get intelligent cuts and transitions based on video analysis',
+    icon: '🎬',
+    category: 'Editing'
+  },
+  {
     id: 'auto-cut-silence',
     name: 'AI Auto-Cut & Transitions',
     description: 'Remove silence with AI scene analysis and smooth transitions',

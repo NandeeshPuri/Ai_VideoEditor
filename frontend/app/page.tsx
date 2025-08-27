@@ -8,6 +8,7 @@ import VideoPreview from './components/VideoPreview'
 import VoiceTranslationSelector from './components/VoiceTranslationSelector'
 import VideoCompilationSelector from './components/VideoCompilationSelector'
 import ObjectRemovalSelector from './components/ObjectRemovalSelector'
+import AIEditingSelector from './components/AIEditingSelector'
 
 interface BoundingBox {
     id: string
@@ -241,6 +242,14 @@ export default function Home() {
                                 videoFile={uploadedFile}
                                 onBoundingBoxesChange={setObjectRemovalBoxes}
                                 disabled={isProcessing}
+                            />
+                        )}
+
+                        {/* AI Editing Selector - Only show when feature is selected */}
+                        {mode === 'single' && selectedFeatures.includes('ai-editing-suggestions') && uploadedFile && (
+                            <AIEditingSelector
+                                uploadId={uploadId!}
+                                videoFile={uploadedFile}
                             />
                         )}
                     </div>

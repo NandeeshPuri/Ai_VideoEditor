@@ -68,6 +68,12 @@ tmp/
 uploads/
 processed/
 
+# Test files (should not be pushed to production repo)
+test_*.py
+test_output.srt
+*.test.py
+*_test.py
+
 # Video and media files (sample/test files)
 *.mp4
 *.avi
@@ -172,3 +178,23 @@ dmypy.json
 # Temporary AI processing files
 *.npy
 *.npz
+
+# Additional exclusions
+*.bak
+*.backup
+*.orig
+*.rej
+*.pid
+*.seed
+*.pid.lock
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Configuration files with sensitive data
+config.ini
+config.json
+settings.json
+secrets.json
