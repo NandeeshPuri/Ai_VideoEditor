@@ -367,23 +367,28 @@ async def _process_object_removal(upload_id, processing_status, bounding_boxes):
 
 @app.post("/process/video-compilation")
 async def process_video_compilation(
-    upload_ids: List[str] = Query(..., description="List of upload IDs (max 5)"),
+    upload_ids: str = Query(..., description="Comma-separated list of upload IDs (max 5)"),
     background_tasks: BackgroundTasks = None,
     max_duration: int = 300,
     transition_style: str = "fade",
-    preset: str = "youtube_shorts"
+    preset: str = "youtube_shorts",
+    apply_effects: bool = False,
+    effect_type: str = "none"
 ):
     """Create compilation video from multiple uploaded videos"""
-    if len(upload_ids) > 5:
+    # Parse comma-separated upload IDs
+    upload_id_list = [uid.strip() for uid in upload_ids.split(',') if uid.strip()]
+    
+    if len(upload_id_list) > 5:
         raise HTTPException(status_code=400, detail="Maximum 5 videos allowed")
     
     # Validate all upload IDs exist
-    for upload_id in upload_ids:
+    for upload_id in upload_id_list:
         if upload_id not in processing_status:
             raise HTTPException(status_code=404, detail=f"Upload ID {upload_id} not found")
     
     # Use first upload ID as main for status tracking
-    main_upload_id = upload_ids[0]
+    main_upload_id = upload_id_list[0]
     processing_status[main_upload_id]["status"] = "processing"
     processing_status[main_upload_id]["progress"] = 10
     
@@ -391,19 +396,21 @@ async def process_video_compilation(
         background_tasks = BackgroundTasks()
     background_tasks.add_task(
         _process_video_compilation,
-        upload_ids,
+        upload_id_list,
         processing_status,
         max_duration,
         transition_style,
-        preset
+        preset,
+        apply_effects,
+        effect_type
     )
     
     return {"message": "Video compilation processing started", "main_upload_id": main_upload_id}
 
-async def _process_video_compilation(upload_ids, processing_status, max_duration, transition_style, preset):
+async def _process_video_compilation(upload_ids, processing_status, max_duration, transition_style, preset, apply_effects, effect_type):
     """Background task for video compilation"""
     service = get_service("video_compilation")
-    await service.process(upload_ids, processing_status, max_duration, transition_style, preset)
+    await service.process(upload_ids, processing_status, max_duration, transition_style, preset, apply_effects, effect_type)
 
 @app.get("/status/{upload_id}")
 async def get_processing_status(upload_id: str):
@@ -416,18 +423,17 @@ async def get_processing_status(upload_id: str):
 @app.get("/download/by-upload/{upload_id}")
 async def download_processed_by_upload(upload_id: str):
     """Download the first processed file for an upload and clean it up after sending."""
-    if upload_id not in processing_status:
-        raise HTTPException(status_code=404, detail="Upload ID not found")
-
-    status = processing_status[upload_id]
-    if status["status"] != "completed":
-        raise HTTPException(status_code=400, detail="Processing not completed")
-
+    # Check both processed and compilation directories for files
     processed_files = list(PROCESSED_DIR.glob(f"{upload_id}*"))
-    if not processed_files:
+    compilation_files = list(Path("temp/compilation").glob(f"{upload_id}*"))
+    
+    # Combine and sort by modification time (newest first)
+    all_files = processed_files + compilation_files
+    if not all_files:
         raise HTTPException(status_code=404, detail="Processed file not found")
 
-    file_path = processed_files[0]
+    # Get the most recent file
+    file_path = max(all_files, key=lambda f: f.stat().st_mtime)
 
     from starlette.background import BackgroundTask
     def _cleanup():
@@ -463,6 +469,12 @@ async def get_compilation_presets():
     service = get_service("video_compilation")
     return service.get_compilation_presets()
 
+@app.get("/effects/post-compilation")
+async def get_post_compilation_effects():
+    """Get available post-compilation effects"""
+    service = get_service("video_compilation")
+    return service.get_post_compilation_effects()
+
 @app.get("/presets/transitions")
 async def get_transition_styles():
     """Get available transition styles"""
@@ -476,6 +488,8 @@ async def list_downloads(upload_id: str):
         raise HTTPException(status_code=404, detail="Upload ID not found")
     
     processed_files = list(PROCESSED_DIR.glob(f"{upload_id}*"))
+    compilation_files = list(Path("temp/compilation").glob(f"{upload_id}*"))
+    all_files = processed_files + compilation_files
     
     return {
         "upload_id": upload_id,
@@ -485,9 +499,26 @@ async def list_downloads(upload_id: str):
                 "download_url": f"/downloads/{f.name}",
                 "size": f.stat().st_size
             }
-            for f in processed_files
+            for f in all_files
         ]
     }
+
+@app.get("/video/{upload_id}")
+async def get_video_stream(upload_id: str):
+    """Stream video file for preview (doesn't delete the file)"""
+    # Check both processed and compilation directories for files
+    processed_files = list(PROCESSED_DIR.glob(f"{upload_id}*"))
+    compilation_files = list(Path("temp/compilation").glob(f"{upload_id}*"))
+    
+    # Combine and sort by modification time (newest first)
+    all_files = processed_files + compilation_files
+    if not all_files:
+        raise HTTPException(status_code=404, detail="Video file not found")
+
+    # Get the most recent file
+    file_path = max(all_files, key=lambda f: f.stat().st_mtime)
+
+    return FileResponse(path=file_path, filename=file_path.name, media_type="video/mp4")
 
 @app.get("/debug/status")
 async def debug_status():

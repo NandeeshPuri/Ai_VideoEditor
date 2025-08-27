@@ -2,33 +2,17 @@
 
 import { useRef, useEffect, useState } from 'react'
 
-interface VideoPreviewProps {
-    file: File
+interface CompilationPreviewProps {
     uploadId: string | null
     processingStatus: any
+    selectedVideos: string[]
 }
 
-export default function VideoPreview({ file, uploadId, processingStatus }: VideoPreviewProps) {
-    const videoRef = useRef<HTMLVideoElement>(null)
+export default function CompilationPreview({ uploadId, processingStatus, selectedVideos }: CompilationPreviewProps) {
     const processedVideoRef = useRef<HTMLVideoElement>(null)
-    const [videoUrl, setVideoUrl] = useState<string>('')
     const [processedVideoUrl, setProcessedVideoUrl] = useState<string>('')
     const [isDownloading, setIsDownloading] = useState(false)
-
-    useEffect(() => {
-        if (file) {
-            const url = URL.createObjectURL(file)
-            setVideoUrl(url)
-            return () => URL.revokeObjectURL(url)
-        }
-    }, [file])
-
-    useEffect(() => {
-        // Clear processed video URL when processing starts
-        if (processingStatus?.status === 'processing') {
-            setProcessedVideoUrl('')
-        }
-    }, [processingStatus?.status])
+    const [isLoadingVideo, setIsLoadingVideo] = useState(false)
 
     const getStatusColor = (status: string) => {
         switch (status) {
@@ -52,7 +36,7 @@ export default function VideoPreview({ file, uploadId, processingStatus }: Video
             case 'error':
                 return '❌'
             default:
-                return '📹'
+                return '🎬'
         }
     }
 
@@ -67,7 +51,7 @@ export default function VideoPreview({ file, uploadId, processingStatus }: Video
                 const url = URL.createObjectURL(blob)
                 const a = document.createElement('a')
                 a.href = url
-                a.download = `processed_${file.name}`
+                a.download = `compilation_${uploadId}.mp4`
                 document.body.appendChild(a)
                 a.click()
                 document.body.removeChild(a)
@@ -83,47 +67,94 @@ export default function VideoPreview({ file, uploadId, processingStatus }: Video
     }
 
     const loadProcessedVideo = async () => {
-        if (!uploadId || !processingStatus?.output_path) return
+        if (!uploadId) return
 
+        setIsLoadingVideo(true)
         try {
-            const response = await fetch(`http://localhost:8000/download/by-upload/${uploadId}`)
+            // Try to load the video from the streaming endpoint first (better for preview)
+            const response = await fetch(`http://localhost:8000/video/${uploadId}`)
             if (response.ok) {
                 const blob = await response.blob()
                 const url = URL.createObjectURL(blob)
                 setProcessedVideoUrl(url)
+            } else {
+                // Fallback to download endpoint
+                const downloadResponse = await fetch(`http://localhost:8000/download/by-upload/${uploadId}`)
+                if (downloadResponse.ok) {
+                    const blob = await downloadResponse.blob()
+                    const url = URL.createObjectURL(blob)
+                    setProcessedVideoUrl(url)
+                } else {
+                    console.error('Failed to load video:', response.status, response.statusText)
+                }
             }
         } catch (error) {
             console.error('Failed to load processed video:', error)
+        } finally {
+            setIsLoadingVideo(false)
         }
     }
 
     useEffect(() => {
-        if (processingStatus?.status === 'completed' && !processedVideoUrl) {
-            loadProcessedVideo()
+        if (processingStatus?.status === 'completed') {
+            // Add a small delay to ensure the file is written
+            setTimeout(() => {
+                loadProcessedVideo()
+            }, 1000)
         }
-    }, [processingStatus?.status, uploadId, processedVideoUrl])
+    }, [processingStatus?.status, uploadId])
+
+    useEffect(() => {
+        // Clear processed video URL when processing starts
+        if (processingStatus?.status === 'processing') {
+            setProcessedVideoUrl('')
+        }
+    }, [processingStatus?.status])
 
     return (
         <div className="bg-white rounded-lg p-6 shadow-lg">
-            <h2 className="text-xl font-semibold text-gray-900 mb-4">Video Preview</h2>
+            <h2 className="text-xl font-semibold text-gray-900 mb-4 flex items-center">
+                <span className="mr-2">🎬</span>
+                Compilation Preview
+            </h2>
 
             <div className="space-y-6">
-                {/* Original Video */}
-                <div>
-                    <h3 className="text-lg font-medium text-gray-900 mb-3 flex items-center">
-                        <span className="mr-2">📹</span>
-                        Original Video
-                    </h3>
-                    <div className="relative bg-black rounded-lg overflow-hidden">
-                        <video
-                            ref={videoRef}
-                            src={videoUrl}
-                            controls
-                            className="w-full h-auto max-h-96"
-                            preload="metadata"
-                        >
-                            Your browser does not support the video tag.
-                        </video>
+                {/* Compilation Info */}
+                <div className="bg-gradient-to-r from-purple-50 to-blue-50 border border-purple-200 rounded-lg p-4">
+                    <h3 className="font-medium text-gray-900 mb-2">Compilation Details</h3>
+                    <div className="grid grid-cols-2 gap-4 text-sm">
+                        <div>
+                            <span className="font-medium text-gray-700">Videos Used:</span>
+                            <p className="text-gray-900">{selectedVideos.length} videos</p>
+                        </div>
+                        <div>
+                            <span className="font-medium text-gray-700">Upload ID:</span>
+                            <p className="text-gray-900 font-mono text-xs">{uploadId}</p>
+                        </div>
+                        {processingStatus?.clips_used && (
+                            <div>
+                                <span className="font-medium text-gray-700">Clips Used:</span>
+                                <p className="text-gray-900">{processingStatus.clips_used} clips</p>
+                            </div>
+                        )}
+                        {processingStatus?.total_duration && (
+                            <div>
+                                <span className="font-medium text-gray-700">Duration:</span>
+                                <p className="text-gray-900">{processingStatus.total_duration.toFixed(1)}s</p>
+                            </div>
+                        )}
+                        {processingStatus?.platform && (
+                            <div>
+                                <span className="font-medium text-gray-700">Platform:</span>
+                                <p className="text-gray-900">{processingStatus.platform}</p>
+                            </div>
+                        )}
+                        {processingStatus?.aspect_ratio && (
+                            <div>
+                                <span className="font-medium text-gray-700">Aspect Ratio:</span>
+                                <p className="text-gray-900">{processingStatus.aspect_ratio}</p>
+                            </div>
+                        )}
                     </div>
                 </div>
 
@@ -132,7 +163,7 @@ export default function VideoPreview({ file, uploadId, processingStatus }: Video
                     <div>
                         <h3 className="text-lg font-medium text-gray-900 mb-3 flex items-center">
                             <span className="mr-2">✨</span>
-                            Processed Video
+                            Final Compilation
                         </h3>
                         {processedVideoUrl ? (
                             <div className="space-y-3">
@@ -161,7 +192,7 @@ export default function VideoPreview({ file, uploadId, processingStatus }: Video
                                         ) : (
                                             <>
                                                 <span className="mr-2">⬇️</span>
-                                                Download Processed Video
+                                                Download Compilation
                                             </>
                                         )}
                                     </button>
@@ -174,36 +205,26 @@ export default function VideoPreview({ file, uploadId, processingStatus }: Video
                             </div>
                         ) : (
                             <div className="bg-gray-50 rounded-lg p-4 text-center">
-                                <p className="text-gray-600">Loading processed video...</p>
+                                {isLoadingVideo ? (
+                                    <div className="flex items-center justify-center space-x-2">
+                                        <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-600"></div>
+                                        <p className="text-gray-600">Loading compilation video...</p>
+                                    </div>
+                                ) : (
+                                    <>
+                                        <p className="text-gray-600 mb-3">Video not loaded yet</p>
+                                        <button
+                                            onClick={loadProcessedVideo}
+                                            className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg font-medium transition-colors"
+                                        >
+                                            🔄 Load Video
+                                        </button>
+                                    </>
+                                )}
                             </div>
                         )}
                     </div>
                 )}
-
-                {/* File Info */}
-                <div className="bg-gray-50 rounded-lg p-4">
-                    <h3 className="font-medium text-gray-900 mb-3">File Information</h3>
-                    <div className="grid grid-cols-2 gap-4 text-sm">
-                        <div>
-                            <span className="font-medium text-gray-700">Filename:</span>
-                            <p className="text-gray-900 truncate">{file.name}</p>
-                        </div>
-                        <div>
-                            <span className="font-medium text-gray-700">Size:</span>
-                            <p className="text-gray-900">
-                                {(file.size / (1024 * 1024)).toFixed(2)} MB
-                            </p>
-                        </div>
-                        <div>
-                            <span className="font-medium text-gray-700">Type:</span>
-                            <p className="text-gray-900">{file.type}</p>
-                        </div>
-                        <div>
-                            <span className="font-medium text-gray-700">Upload ID:</span>
-                            <p className="text-gray-900 font-mono text-xs">{uploadId}</p>
-                        </div>
-                    </div>
-                </div>
 
                 {/* Processing Status */}
                 {processingStatus && (
@@ -226,7 +247,7 @@ export default function VideoPreview({ file, uploadId, processingStatus }: Video
                                 </div>
                                 <div className="w-full bg-gray-200 rounded-full h-2">
                                     <div
-                                        className="bg-blue-600 h-2 rounded-full transition-all duration-300"
+                                        className="bg-purple-600 h-2 rounded-full transition-all duration-300"
                                         style={{ width: `${processingStatus.progress}%` }}
                                     />
                                 </div>
@@ -256,6 +277,33 @@ export default function VideoPreview({ file, uploadId, processingStatus }: Video
                                 </p>
                             </div>
                         )}
+                    </div>
+                )}
+
+                {/* Processing Steps Info */}
+                {processingStatus?.status === 'processing' && (
+                    <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                        <h3 className="font-medium text-blue-900 mb-2">Processing Steps</h3>
+                        <div className="space-y-2 text-sm text-blue-800">
+                            <div className="flex items-center">
+                                <span className="mr-2">1️⃣</span>
+                                <span>AI analyzing videos for best moments</span>
+                            </div>
+                            <div className="flex items-center">
+                                <span className="mr-2">2️⃣</span>
+                                <span>Creating compilation with transitions</span>
+                            </div>
+                            <div className="flex items-center">
+                                <span className="mr-2">3️⃣</span>
+                                <span>Optimizing for selected platform</span>
+                            </div>
+                            {processingStatus.message && (
+                                <div className="flex items-center">
+                                    <span className="mr-2">4️⃣</span>
+                                    <span>{processingStatus.message}</span>
+                                </div>
+                            )}
+                        </div>
                     </div>
                 )}
             </div>

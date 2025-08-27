@@ -7,6 +7,8 @@ interface VideoCompilationSelectorProps {
     onMaxDurationChange: (duration: number) => void
     onTransitionStyleChange: (style: string) => void
     onPresetChange: (preset: string) => void
+    onApplyEffectsChange: (apply: boolean) => void
+    onEffectTypeChange: (effectType: string) => void
     disabled?: boolean
     availableUploadIds?: string[]
 }
@@ -27,6 +29,14 @@ interface TransitionStyle {
     name: string
     description: string
     icon: string
+}
+
+interface PostCompilationEffect {
+    id: string
+    name: string
+    description: string
+    icon: string
+    category: string
 }
 
 const COMPILATION_PRESETS: CompilationPreset[] = [
@@ -181,11 +191,93 @@ const TRANSITION_STYLES: TransitionStyle[] = [
     }
 ]
 
+const POST_COMPILATION_EFFECTS: PostCompilationEffect[] = [
+    {
+        id: "none",
+        name: "No Effect",
+        description: "Keep original video without any effects",
+        icon: "🎬",
+        category: "none"
+    },
+    {
+        id: "vintage",
+        name: "Vintage",
+        description: "Classic film look with warm tones and grain",
+        icon: "📷",
+        category: "retro"
+    },
+    {
+        id: "cinematic",
+        name: "Cinematic",
+        description: "Movie-like appearance with enhanced contrast",
+        icon: "🎭",
+        category: "professional"
+    },
+    {
+        id: "warm",
+        name: "Warm",
+        description: "Cozy, golden-hour lighting effect",
+        icon: "🌅",
+        category: "color"
+    },
+    {
+        id: "cool",
+        name: "Cool",
+        description: "Blue-tinted, modern aesthetic",
+        icon: "❄️",
+        category: "color"
+    },
+    {
+        id: "dramatic",
+        name: "Dramatic",
+        description: "High contrast, bold colors for impact",
+        icon: "⚡",
+        category: "professional"
+    },
+    {
+        id: "bright",
+        name: "Bright",
+        description: "Enhanced brightness and vibrant colors",
+        icon: "☀️",
+        category: "color"
+    },
+    {
+        id: "moody",
+        name: "Moody",
+        description: "Dark, atmospheric mood with reduced brightness",
+        icon: "🌙",
+        category: "atmospheric"
+    },
+    {
+        id: "vibrant",
+        name: "Vibrant",
+        description: "Saturated, eye-catching colors",
+        icon: "🌈",
+        category: "color"
+    },
+    {
+        id: "monochrome",
+        name: "Monochrome",
+        description: "Classic black and white effect",
+        icon: "⚫",
+        category: "retro"
+    },
+    {
+        id: "sepia",
+        name: "Sepia",
+        description: "Antique brown-tinted effect",
+        icon: "📜",
+        category: "retro"
+    }
+]
+
 export default function VideoCompilationSelector({
     onUploadIdsChange,
     onMaxDurationChange,
     onTransitionStyleChange,
     onPresetChange,
+    onApplyEffectsChange,
+    onEffectTypeChange,
     disabled,
     availableUploadIds = []
 }: VideoCompilationSelectorProps) {
@@ -193,6 +285,8 @@ export default function VideoCompilationSelector({
     const [selectedPreset, setSelectedPreset] = useState<string>("youtube_shorts")
     const [selectedTransitionStyle, setSelectedTransitionStyle] = useState<string>("fade")
     const [customDuration, setCustomDuration] = useState<number>(60)
+    const [applyEffects, setApplyEffects] = useState<boolean>(false)
+    const [selectedEffect, setSelectedEffect] = useState<string>("none")
 
     useEffect(() => {
         onUploadIdsChange(selectedUploadIds)
@@ -210,6 +304,14 @@ export default function VideoCompilationSelector({
     useEffect(() => {
         onTransitionStyleChange(selectedTransitionStyle)
     }, [selectedTransitionStyle, onTransitionStyleChange])
+
+    useEffect(() => {
+        onApplyEffectsChange(applyEffects)
+    }, [applyEffects, onApplyEffectsChange])
+
+    useEffect(() => {
+        onEffectTypeChange(selectedEffect)
+    }, [selectedEffect, onEffectTypeChange])
 
     const handleUploadIdToggle = (uploadId: string) => {
         if (selectedUploadIds.includes(uploadId)) {
@@ -277,11 +379,10 @@ export default function VideoCompilationSelector({
                         {COMPILATION_PRESETS.map((preset) => (
                             <label
                                 key={preset.id}
-                                className={`flex items-start p-3 border-2 rounded-lg cursor-pointer transition-all duration-200 hover:bg-gray-50 ${
-                                    selectedPreset === preset.id
-                                        ? 'border-purple-500 bg-purple-50'
-                                        : 'border-gray-200 bg-white'
-                                }`}
+                                className={`flex items-start p-3 border-2 rounded-lg cursor-pointer transition-all duration-200 hover:bg-gray-50 ${selectedPreset === preset.id
+                                    ? 'border-purple-500 bg-purple-50'
+                                    : 'border-gray-200 bg-white'
+                                    }`}
                             >
                                 <input
                                     type="radio"
@@ -358,6 +459,55 @@ export default function VideoCompilationSelector({
                     <p className="text-xs text-gray-500 mt-1">
                         {TRANSITION_STYLES.find(s => s.id === selectedTransitionStyle)?.description}
                     </p>
+                </div>
+
+                {/* Post-Compilation Effects */}
+                <div>
+                    <div className="flex items-center justify-between mb-2">
+                        <label className="block text-sm font-medium text-gray-700">
+                            Apply Effects to Final Video
+                        </label>
+                        <label className="flex items-center">
+                            <input
+                                type="checkbox"
+                                checked={applyEffects}
+                                onChange={(e) => setApplyEffects(e.target.checked)}
+                                disabled={disabled}
+                                className="h-4 w-4 text-purple-600 focus:ring-purple-500 border-gray-300 rounded disabled:opacity-50"
+                            />
+                            <span className="ml-2 text-sm text-gray-700">Enable Effects</span>
+                        </label>
+                    </div>
+
+                    {applyEffects && (
+                        <div className="space-y-3">
+                            <label className="block text-sm font-medium text-gray-700">
+                                Select Effect
+                            </label>
+                            <div className="grid grid-cols-2 gap-2 max-h-48 overflow-y-auto">
+                                {POST_COMPILATION_EFFECTS.map((effect) => (
+                                    <label key={effect.id} className="flex items-center p-2 border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                        <input
+                                            type="radio"
+                                            name="effectType"
+                                            value={effect.id}
+                                            checked={selectedEffect === effect.id}
+                                            onChange={(e) => setSelectedEffect(e.target.value)}
+                                            disabled={disabled}
+                                            className="h-4 w-4 text-purple-600 focus:ring-purple-500 border-gray-300 disabled:opacity-50"
+                                        />
+                                        <span className="ml-2 text-sm text-gray-700 flex items-center">
+                                            <span className="mr-1">{effect.icon}</span>
+                                            {effect.name}
+                                        </span>
+                                    </label>
+                                ))}
+                            </div>
+                            <p className="text-xs text-gray-500">
+                                {POST_COMPILATION_EFFECTS.find(e => e.id === selectedEffect)?.description}
+                            </p>
+                        </div>
+                    )}
                 </div>
 
                 {/* Preview Info */}

@@ -11,6 +11,7 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
 import threading
 from functools import partial
+import logging
 
 class VideoCompilationService:
     def __init__(self):
@@ -19,10 +20,13 @@ class VideoCompilationService:
         # Add thread pool for parallel processing
         self.executor = ThreadPoolExecutor(max_workers=4)  # Optimized for 5 videos
         self._lock = threading.Lock()
+        # Setup logger
+        self.logger = logging.getLogger(__name__)
     
     async def process(self, upload_ids: List[str], processing_status: dict, 
                      max_duration: int = 300, transition_style: str = "fade", 
-                     preset: str = "youtube_shorts"):
+                     preset: str = "youtube_shorts", apply_effects: bool = False,
+                     effect_type: str = "none"):
         """Process video compilation with AI best parts detection and transitions - OPTIMIZED VERSION"""
         try:
             # Update status
@@ -95,6 +99,15 @@ class VideoCompilationService:
             
             final_output = await self._optimize_for_platform_parallel(output_path, main_upload_id, preset_config)
             
+            # Apply post-compilation effects if requested
+            if apply_effects and effect_type != "none":
+                processing_status[main_upload_id]["progress"] = 90
+                processing_status[main_upload_id]["message"] = f"Applying {effect_type} effect to compilation..."
+                
+                final_output = await self._apply_post_compilation_effects_parallel(
+                    final_output, main_upload_id, effect_type
+                )
+            
             # Update status
             processing_status[main_upload_id]["progress"] = 100
             processing_status[main_upload_id]["status"] = "completed"
@@ -144,6 +157,17 @@ class VideoCompilationService:
             input_path,
             upload_id,
             preset_config
+        )
+    
+    async def _apply_post_compilation_effects_parallel(self, input_path: str, upload_id: str, effect_type: str) -> str:
+        """Apply post-compilation effects using parallel processing"""
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            self.executor,
+            self._apply_post_compilation_effects,
+            input_path,
+            upload_id,
+            effect_type
         )
 
     def _get_preset_config(self, preset_id: str) -> Dict:
@@ -310,18 +334,18 @@ class VideoCompilationService:
                 "end_time": duration,
                 "duration": clip_duration,
                 "score": 0.6
-            })
+                    })
         
         return clips
     
     def _create_compilation(self, best_clips: List[Tuple[str, Dict]], 
-                          transition_style: str, upload_id: str, aspect_ratio: str) -> str:
+                           transition_style: str, upload_id: str, aspect_ratio: str) -> str:
         """Create compilation video with transitions"""
         
         # Create filter complex for transitions
-        filter_complex = self._create_transition_filter(best_clips, transition_style)
+        filter_complex = self._create_transition_filter_simple(best_clips, transition_style)
         
-        # Prepare input files
+        # Prepare input files (include each video multiple times if needed)
         input_files = []
         for video_path, clip in best_clips:
             input_files.extend(['-i', video_path])
@@ -345,25 +369,98 @@ class VideoCompilationService:
             '-y', str(output_path)
         ]
         
-        subprocess.run(cmd, check=True, capture_output=True)
-        return str(output_path)
+        self.logger.info(f"FFmpeg command: {' '.join(cmd)}")
+        
+        try:
+            subprocess.run(cmd, check=True, capture_output=True)
+            self.logger.info(f"Compilation video created: {output_path}")
+            return str(output_path)
+        except subprocess.CalledProcessError as e:
+            self.logger.error(f"FFmpeg compilation failed: {e.stderr.decode()}")
+            raise RuntimeError(f"FFmpeg compilation failed: {e.stderr.decode()}")
     
     def __del__(self):
         """Cleanup thread pool on deletion"""
         if hasattr(self, 'executor'):
             self.executor.shutdown(wait=True)
     
+    def _create_transition_filter_simple(self, best_clips: List[Tuple[str, Dict]], 
+                                       transition_style: str) -> str:
+        """Create FFmpeg filter complex for transitions with simple input handling"""
+        
+        filters = []
+        inputs = []
+        
+        for i, (video_path, clip) in enumerate(best_clips):
+            # Each clip gets its own input index (i)
+            # Trim video to clip and scale to common resolution (720x1280)
+            trim_filter = f"[{i}:v]trim=start={clip['start_time']}:end={clip['end_time']},setpts=PTS-STARTPTS,scale=720:1280:force_original_aspect_ratio=decrease,pad=720:1280:(ow-iw)/2:(oh-ih)/2[v{i}]"
+            filters.append(trim_filter)
+            
+            # Trim audio
+            audio_filter = f"[{i}:a]atrim=start={clip['start_time']}:end={clip['end_time']},asetpts=PTS-STARTPTS[a{i}]"
+            filters.append(audio_filter)
+            
+            inputs.append(f"[v{i}]")
+            inputs.append(f"[a{i}]")
+        
+        # Create transitions
+        if transition_style == "fade":
+            transition_filter = self._create_fade_transitions(inputs, len(best_clips))
+        elif transition_style == "slide":
+            transition_filter = self._create_slide_transitions(inputs, len(best_clips))
+        else:  # crossfade
+            transition_filter = self._create_crossfade_transitions(inputs, len(best_clips))
+        
+        filters.append(transition_filter)
+        
+        return ';'.join(filters)
+    
+    def _create_transition_filter_optimized(self, best_clips: List[Tuple[str, Dict]], 
+                                           transition_style: str, video_to_index: Dict[str, int]) -> str:
+        """Create FFmpeg filter complex for transitions with optimized input handling"""
+        
+        filters = []
+        inputs = []
+        
+        for i, (video_path, clip) in enumerate(best_clips):
+            # Get the input index for this video
+            input_index = video_to_index[video_path]
+            
+            # Trim video to clip and scale to common resolution (720x1280)
+            trim_filter = f"[{input_index}:v]trim=start={clip['start_time']}:end={clip['end_time']},setpts=PTS-STARTPTS,scale=720:1280:force_original_aspect_ratio=decrease,pad=720:1280:(ow-iw)/2:(oh-ih)/2[v{i}]"
+            filters.append(trim_filter)
+            
+            # Trim audio
+            audio_filter = f"[{input_index}:a]atrim=start={clip['start_time']}:end={clip['end_time']},asetpts=PTS-STARTPTS[a{i}]"
+            filters.append(audio_filter)
+            
+            inputs.append(f"[v{i}]")
+            inputs.append(f"[a{i}]")
+        
+        # Create transitions
+        if transition_style == "fade":
+            transition_filter = self._create_fade_transitions(inputs, len(best_clips))
+        elif transition_style == "slide":
+            transition_filter = self._create_slide_transitions(inputs, len(best_clips))
+        else:  # crossfade
+            transition_filter = self._create_crossfade_transitions(inputs, len(best_clips))
+        
+        filters.append(transition_filter)
+        
+        return ';'.join(filters)
+    
     def _create_transition_filter(self, best_clips: List[Tuple[str, Dict]], 
                                 transition_style: str) -> str:
-        """Create FFmpeg filter complex for transitions"""
+        """Create FFmpeg filter complex for transitions (legacy method)"""
         
         filters = []
         inputs = []
         outputs = []
         
         for i, (video_path, clip) in enumerate(best_clips):
-            # Trim video to clip
-            trim_filter = f"[{i}:v]trim=start={clip['start_time']}:end={clip['end_time']},setpts=PTS-STARTPTS[v{i}]"
+            # Trim video to clip and scale to common resolution (720x1280)
+            trim_filter = f"[{i}:v]trim=start={clip['start_time']}:end={clip['end_time']},setpts=PTS-STARTPTS,scale=720:1280:force_original_aspect_ratio=decrease,pad=720:1280:(ow-iw)/2:(oh-ih)/2[v{i}]"
             filters.append(trim_filter)
             
             # Trim audio
@@ -655,6 +752,100 @@ class VideoCompilationService:
         except Exception:
             return 0.0
     
+    def _apply_post_compilation_effects(self, input_path: str, upload_id: str, effect_type: str) -> str:
+        """Apply post-compilation effects to the entire video"""
+        output_path = self.temp_dir / f"{upload_id}_with_effects.mp4"
+        
+        # Get effect configuration
+        effect_config = self._get_effect_config(effect_type)
+        if not effect_config:
+            return input_path  # Return original if effect not found
+        
+        # Build FFmpeg command with effects
+        cmd = ['ffmpeg', '-i', input_path]
+        
+        # Add video filters based on effect type
+        video_filters = []
+        
+        if effect_type == "vintage":
+            video_filters.extend([
+                "curves=preset=vintage",
+                "colorbalance=rs=-0.1:gs=0:bs=0.1",
+                "eq=saturation=0.8:contrast=1.2"
+            ])
+        elif effect_type == "cinematic":
+            video_filters.extend([
+                "curves=preset=cinematic",
+                "eq=contrast=1.3:saturation=0.9",
+                "colorbalance=rs=0.05:gs=0:bs=-0.05"
+            ])
+        elif effect_type == "warm":
+            video_filters.extend([
+                "colorbalance=rs=0.1:gs=0.05:bs=-0.1",
+                "eq=saturation=1.1:contrast=1.1"
+            ])
+        elif effect_type == "cool":
+            video_filters.extend([
+                "colorbalance=rs=-0.1:gs=0:bs=0.1",
+                "eq=saturation=0.9:contrast=1.1"
+            ])
+        elif effect_type == "dramatic":
+            video_filters.extend([
+                "curves=preset=dramatic",
+                "eq=contrast=1.4:saturation=1.2",
+                "colorbalance=rs=0.1:gs=0:bs=-0.1"
+            ])
+        elif effect_type == "bright":
+            video_filters.extend([
+                "eq=brightness=0.1:contrast=1.2:saturation=1.1"
+            ])
+        elif effect_type == "moody":
+            video_filters.extend([
+                "eq=brightness=-0.1:contrast=1.3:saturation=0.8",
+                "colorbalance=rs=-0.05:gs=0:bs=0.05"
+            ])
+        elif effect_type == "vibrant":
+            video_filters.extend([
+                "eq=saturation=1.3:contrast=1.2",
+                "colorbalance=rs=0.05:gs=0:bs=-0.05"
+            ])
+        elif effect_type == "monochrome":
+            video_filters.extend([
+                "hue=s=0",
+                "eq=contrast=1.2"
+            ])
+        elif effect_type == "sepia":
+            video_filters.extend([
+                "colorbalance=rs=0.2:gs=0.1:bs=-0.3",
+                "eq=saturation=0.7:contrast=1.1"
+            ])
+        
+        # Add video filter if effects are specified
+        if video_filters:
+            cmd.extend(['-vf', ','.join(video_filters)])
+        
+        # Add output settings
+        cmd.extend([
+            '-c:v', 'libx264',
+            '-preset', 'fast',
+            '-crf', '23',
+            '-c:a', 'copy',  # Keep original audio
+            '-movflags', '+faststart',
+            '-y', str(output_path)
+        ])
+        
+        # Execute FFmpeg command
+        subprocess.run(cmd, check=True, capture_output=True)
+        return str(output_path)
+    
+    def _get_effect_config(self, effect_type: str) -> Dict:
+        """Get configuration for a specific effect"""
+        effects = self.get_post_compilation_effects()
+        for effect in effects:
+            if effect["id"] == effect_type:
+                return effect
+        return None
+    
     def get_transition_styles(self) -> List[Dict]:
         """Get available transition styles"""
         return [
@@ -664,6 +855,87 @@ class VideoCompilationService:
             {"id": "zoom", "name": "Zoom", "description": "Zoom in/out transitions for dynamic effect", "icon": "🔍"},
             {"id": "wipe", "name": "Wipe", "description": "Wipe transitions for modern look", "icon": "🧹"},
             {"id": "dissolve", "name": "Dissolve", "description": "Dissolve transitions for artistic effect", "icon": "✨"}
+        ]
+    
+    def get_post_compilation_effects(self) -> List[Dict]:
+        """Get available post-compilation effects"""
+        return [
+            {
+                "id": "none",
+                "name": "No Effect",
+                "description": "Keep original video without any effects",
+                "icon": "🎬",
+                "category": "none"
+            },
+            {
+                "id": "vintage",
+                "name": "Vintage",
+                "description": "Classic film look with warm tones and grain",
+                "icon": "📷",
+                "category": "retro"
+            },
+            {
+                "id": "cinematic",
+                "name": "Cinematic",
+                "description": "Movie-like appearance with enhanced contrast",
+                "icon": "🎭",
+                "category": "professional"
+            },
+            {
+                "id": "warm",
+                "name": "Warm",
+                "description": "Cozy, golden-hour lighting effect",
+                "icon": "🌅",
+                "category": "color"
+            },
+            {
+                "id": "cool",
+                "name": "Cool",
+                "description": "Blue-tinted, modern aesthetic",
+                "icon": "❄️",
+                "category": "color"
+            },
+            {
+                "id": "dramatic",
+                "name": "Dramatic",
+                "description": "High contrast, bold colors for impact",
+                "icon": "⚡",
+                "category": "professional"
+            },
+            {
+                "id": "bright",
+                "name": "Bright",
+                "description": "Enhanced brightness and vibrant colors",
+                "icon": "☀️",
+                "category": "color"
+            },
+            {
+                "id": "moody",
+                "description": "Dark, atmospheric mood with reduced brightness",
+                "icon": "🌙",
+                "category": "atmospheric"
+            },
+            {
+                "id": "vibrant",
+                "name": "Vibrant",
+                "description": "Saturated, eye-catching colors",
+                "icon": "🌈",
+                "category": "color"
+            },
+            {
+                "id": "monochrome",
+                "name": "Monochrome",
+                "description": "Classic black and white effect",
+                "icon": "⚫",
+                "category": "retro"
+            },
+            {
+                "id": "sepia",
+                "name": "Sepia",
+                "description": "Antique brown-tinted effect",
+                "icon": "📜",
+                "category": "retro"
+            }
         ]
     
     def get_compilation_presets(self) -> List[Dict]:
