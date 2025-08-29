@@ -2,6 +2,7 @@ import whisper
 import subprocess
 import tempfile
 import os
+import sys
 from pathlib import Path
 import json
 from googletrans import Translator
@@ -19,9 +20,41 @@ class SubtitleService:
             processing_status[upload_id]["progress"] = 20
             processing_status[upload_id]["status"] = "processing"
             
-            # Get file paths
-            file_path = Path("../" + processing_status[upload_id]["file_path"])
-            output_dir = Path("../temp/processed")
+            # Get file paths with better path resolution
+            file_path_str = processing_status[upload_id]["file_path"]
+            
+            # Try multiple path resolution strategies
+            file_path = None
+            possible_paths = [
+                Path("../" + file_path_str),  # Original approach
+                Path(file_path_str),  # Direct path
+                Path("temp/uploads") / Path(file_path_str).name,  # Just filename in uploads
+                Path("backend/temp/uploads") / Path(file_path_str).name,  # Backend uploads
+            ]
+            
+            for path in possible_paths:
+                if path.exists():
+                    file_path = path
+                    print(f"✅ Found video file at: {file_path}")
+                    break
+            
+            if not file_path:
+                # List available files for debugging
+                print(f"❌ Video file not found. Tried paths:")
+                for path in possible_paths:
+                    print(f"   - {path} (exists: {path.exists()})")
+                
+                # Check what files are actually in the uploads directory
+                uploads_dir = Path("temp/uploads")
+                if uploads_dir.exists():
+                    print(f"📁 Files in {uploads_dir}:")
+                    for file in uploads_dir.glob("*"):
+                        print(f"   - {file.name}")
+                
+                raise Exception(f"Video file not found. Tried: {[str(p) for p in possible_paths]}")
+            
+            # Ensure output directory exists
+            output_dir = Path("temp/processed")
             output_dir.mkdir(parents=True, exist_ok=True)
             
             # Extract audio
@@ -50,13 +83,13 @@ class SubtitleService:
                 # Update status with video output
                 processing_status[upload_id]["progress"] = 100
                 processing_status[upload_id]["status"] = "completed"
-                processing_status[upload_id]["output_path"] = str(output_path).replace("../", "")
-                processing_status[upload_id]["srt_path"] = str(srt_path).replace("../", "")
+                processing_status[upload_id]["output_path"] = str(output_path)
+                processing_status[upload_id]["srt_path"] = str(srt_path)
             else:
                 # Just return SRT file
                 processing_status[upload_id]["progress"] = 100
                 processing_status[upload_id]["status"] = "completed"
-                processing_status[upload_id]["srt_path"] = str(srt_path).replace("../", "")
+                processing_status[upload_id]["srt_path"] = str(srt_path)
             
         except Exception as e:
             processing_status[upload_id]["status"] = "error"
@@ -64,19 +97,99 @@ class SubtitleService:
             print(f"Subtitle generation error: {e}")
     
     def _extract_audio(self, video_path: str) -> str:
-        """Extract audio from video using FFmpeg"""
+        """Extract audio from video using FFmpeg with improved error handling"""
         temp_audio = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
         temp_audio.close()
         
+        # Find FFmpeg executable with multiple fallback options
+        ffmpeg_path = self._find_ffmpeg()
+        if not ffmpeg_path:
+            raise Exception("FFmpeg not found. Please install FFmpeg and ensure it's in your PATH.")
+        
+        # Normalize video path for Windows compatibility
+        video_path = str(Path(video_path).resolve())
+        temp_audio_path = str(Path(temp_audio.name).resolve())
+        
+        # Verify input file exists before running FFmpeg
+        if not os.path.exists(video_path):
+            raise Exception(f"Input video file does not exist: {video_path}")
+        
+        print(f"🎵 Extracting audio from: {video_path}")
+        print(f"🎵 Output audio to: {temp_audio_path}")
+        
         cmd = [
-            (shutil.which('ffmpeg') or 'ffmpeg'), '-i', video_path,
+            ffmpeg_path, '-i', video_path,
             '-vn', '-acodec', 'pcm_s16le',
             '-ar', '16000', '-ac', '1',
-            '-y', temp_audio.name
+            '-y', temp_audio_path
         ]
         
-        subprocess.run(cmd, check=True, capture_output=True)
-        return temp_audio.name
+        try:
+            # Run FFmpeg with detailed error handling
+            print(f"🔧 Running FFmpeg command: {' '.join(cmd)}")
+            result = subprocess.run(
+                cmd, 
+                capture_output=True, 
+                text=True, 
+                timeout=300,  # 5 minute timeout
+                check=True
+            )
+            
+            # Verify the output file was created and has content
+            if not os.path.exists(temp_audio_path):
+                raise Exception("Audio extraction failed - no output file created")
+            
+            file_size = os.path.getsize(temp_audio_path)
+            if file_size == 0:
+                raise Exception("Audio extraction failed - output file is empty")
+            
+            print(f"✅ Audio extraction successful. File size: {file_size} bytes")
+            return temp_audio_path
+            
+        except subprocess.TimeoutExpired:
+            raise Exception("Audio extraction timed out after 5 minutes")
+        except subprocess.CalledProcessError as e:
+            error_msg = f"FFmpeg error (code {e.returncode}): {e.stderr}"
+            print(f"❌ FFmpeg command failed: {' '.join(cmd)}")
+            print(f"❌ FFmpeg stderr: {e.stderr}")
+            print(f"❌ FFmpeg stdout: {e.stdout}")
+            raise Exception(error_msg)
+        except Exception as e:
+            raise Exception(f"Audio extraction failed: {str(e)}")
+    
+    def _find_ffmpeg(self) -> str:
+        """Find FFmpeg executable with multiple fallback options"""
+        # Common FFmpeg paths on Windows
+        possible_paths = [
+            'ffmpeg',  # If in PATH
+            'C:\\ffmpeg\\bin\\ffmpeg.exe',
+            'C:\\Program Files\\ffmpeg\\bin\\ffmpeg.exe',
+            'C:\\Program Files (x86)\\ffmpeg\\bin\\ffmpeg.exe',
+            'C:\\Users\\HP\\AppData\\Local\\Microsoft\\WinGet\\Links\\ffmpeg.EXE',  # From error message
+        ]
+        
+        for path in possible_paths:
+            try:
+                if path == 'ffmpeg':
+                    # Check if ffmpeg is in PATH
+                    result = subprocess.run([path, '-version'], capture_output=True, text=True, timeout=10)
+                    if result.returncode == 0:
+                        return path
+                else:
+                    # Check specific path
+                    if os.path.exists(path):
+                        result = subprocess.run([path, '-version'], capture_output=True, text=True, timeout=10)
+                        if result.returncode == 0:
+                            return path
+            except Exception:
+                continue
+        
+        # Try using shutil.which as last resort
+        ffmpeg_path = shutil.which('ffmpeg')
+        if ffmpeg_path:
+            return ffmpeg_path
+        
+        return None
     
     def _transcribe_audio(self, audio_path: str) -> list:
         """Transcribe audio using Whisper"""
@@ -116,18 +229,102 @@ class SubtitleService:
                 f.write(f"{segment['text']}\n\n")
     
     def _burn_subtitles(self, video_path: str, srt_path: str, output_path: str):
-        """Burn subtitles into video using FFmpeg"""
-        srt_escaped = str(Path(srt_path)).replace('\\', '/')
-        cmd = [
-            (shutil.which('ffmpeg') or 'ffmpeg'), '-i', video_path,
-            '-vf', f"subtitles='{srt_escaped}'",
-            '-c:v', 'libx264', '-crf', '23', '-preset', 'medium',
-            '-c:a', 'aac',
-            '-movflags', '+faststart',
-            '-y', output_path
-        ]
-
-        subprocess.run(cmd, check=True, capture_output=True)
+        """Burn subtitles into video using simple, working approach"""
+        try:
+            # Import ffmpeg-python for simple subtitle burning
+            import ffmpeg
+            
+            print(f"🔥 Burning subtitles from: {srt_path}")
+            print(f"🔥 Input video: {video_path}")
+            print(f"🔥 Output video: {output_path}")
+            
+            # Use ffmpeg-python for simple subtitle burning - the working approach from yesterday
+            # Input the video file
+            input_stream = ffmpeg.input(video_path)
+            
+            # Apply subtitle filter to video stream only
+            video_with_subtitles = ffmpeg.filter(input_stream, 'subtitles', srt_path,
+                                               force_style='FontSize=24,PrimaryColour=&HFFFFFF,BackColour=&H000000,Bold=1')
+            
+            # Output with both video (with subtitles) and audio (original)
+            stream = ffmpeg.output(video_with_subtitles, input_stream, output_path, 
+                                 vcodec='libx264', acodec='copy')
+            
+            # Run FFmpeg
+            print(f"🔧 Running ffmpeg-python subtitle burning...")
+            ffmpeg.run(stream, overwrite_output=True)
+            
+            # Verify output
+            if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
+                raise Exception("Subtitle burning failed - no output file created")
+            
+            print(f"✅ Subtitle burning successful with ffmpeg-python")
+            
+        except ImportError:
+            print("❌ ffmpeg-python not available, trying fallback method...")
+            self._burn_subtitles_fallback(video_path, srt_path, output_path)
+        except Exception as e:
+            print(f"❌ ffmpeg-python method failed: {e}")
+            self._burn_subtitles_fallback(video_path, srt_path, output_path)
+    
+    def _burn_subtitles_fallback(self, video_path: str, srt_path: str, output_path: str):
+        """Fallback subtitle burning method using subprocess"""
+        try:
+            # Find FFmpeg executable
+            ffmpeg_path = self._find_ffmpeg()
+            if not ffmpeg_path:
+                raise Exception("FFmpeg not found. Please install FFmpeg and ensure it's in your PATH.")
+            
+            # Normalize paths for Windows compatibility
+            video_path = str(Path(video_path).resolve())
+            srt_path = str(Path(srt_path).resolve())
+            output_path = str(Path(output_path).resolve())
+            
+            # Verify files exist
+            if not os.path.exists(video_path):
+                raise Exception(f"Input video file does not exist: {video_path}")
+            if not os.path.exists(srt_path):
+                raise Exception(f"SRT file does not exist: {srt_path}")
+            
+            # Use simple subtitle filter
+            cmd = [
+                ffmpeg_path, '-i', video_path,
+                '-vf', f"subtitles={srt_path}",
+                '-c:v', 'libx264',
+                '-c:a', 'copy',
+                '-y', output_path
+            ]
+            
+            print(f"🔧 Fallback subtitle burning command: {' '.join(cmd)}")
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=600, check=True)
+            
+            # Verify output
+            if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
+                raise Exception("Fallback subtitle burning failed - no output file created")
+            
+            print(f"✅ Fallback subtitle burning successful")
+            
+        except Exception as e:
+            print(f"❌ Fallback method failed: {e}")
+            # Final fallback to copying video without subtitles
+            print("⚠️ All subtitle burning methods failed, copying video without subtitles")
+            self._copy_video_without_subtitles(video_path, output_path, ffmpeg_path)
+    
+    def _copy_video_without_subtitles(self, video_path: str, output_path: str, ffmpeg_path: str):
+        """Copy video without burning subtitles as fallback"""
+        try:
+            cmd = [
+                ffmpeg_path, '-i', video_path,
+                '-c', 'copy',  # Copy without re-encoding
+                '-y', output_path
+            ]
+            
+            print(f"📋 Copying video: {' '.join(cmd)}")
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=300, check=True)
+            print(f"✅ Video copied successfully (without subtitles)")
+            
+        except Exception as e:
+            raise Exception(f"Failed to copy video: {e}")
     
     def translate_subtitles(self, srt_path: str, target_language: str) -> str:
         """Translate subtitles to target language"""
@@ -194,3 +391,50 @@ class SubtitleService:
                 i += 1
         
         return segments
+    
+    def _parse_srt_for_burning(self, srt_content: str) -> list:
+        """Parse SRT content for subtitle burning with timing information"""
+        segments = []
+        lines = srt_content.strip().split('\n')
+        
+        i = 0
+        while i < len(lines):
+            line = lines[i].strip()
+            
+            if line.isdigit():  # Segment index
+                # Find timestamp line
+                timestamp_line = lines[i + 1].strip()
+                start_time, end_time = timestamp_line.split(' --> ')
+                
+                # Find text lines
+                text_lines = []
+                j = i + 2
+                while j < len(lines) and lines[j].strip():
+                    text_lines.append(lines[j].strip())
+                    j += 1
+                
+                text = ' '.join(text_lines)
+                
+                # Convert timestamps to seconds
+                start_seconds = self._srt_time_to_seconds(start_time)
+                end_seconds = self._srt_time_to_seconds(end_time)
+                
+                segments.append({
+                    'start_seconds': start_seconds,
+                    'end_seconds': end_seconds,
+                    'text': text
+                })
+                
+                i = j + 1
+            else:
+                i += 1
+        
+        return segments
+    
+    def _srt_time_to_seconds(self, srt_time: str) -> float:
+        """Convert SRT time format (HH:MM:SS,mmm) to seconds"""
+        time_part, ms_part = srt_time.split(',')
+        h, m, s = map(int, time_part.split(':'))
+        ms = int(ms_part)
+        
+        return h * 3600 + m * 60 + s + ms / 1000

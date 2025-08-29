@@ -25,24 +25,50 @@ class ObjectRemovalService:
             if bounding_boxes is None:
                 bounding_boxes = []
             
-            # Convert string format to list of bounding boxes if needed
+            # FIXED: Handle different bounding box formats properly
+            parsed_bounding_boxes = []
+            
             if isinstance(bounding_boxes, str):
                 # Parse bounding boxes from string format "x1,y1,x2,y2;x1,y1,x2,y2"
-                bounding_boxes = []
                 for box_str in bounding_boxes.split(';'):
                     if box_str.strip():
-                        coords = [int(x) for x in box_str.split(',')]
-                        if len(coords) == 4:
-                            bounding_boxes.append(coords)
+                        try:
+                            coords = [float(x) for x in box_str.split(',')]
+                            if len(coords) == 4:
+                                # Convert to integers for pixel coordinates
+                                parsed_bounding_boxes.append([int(coord) for coord in coords])
+                        except (ValueError, IndexError) as e:
+                            print(f"Warning: Invalid bounding box format: {box_str}, error: {e}")
+                            continue
+            elif isinstance(bounding_boxes, list):
+                # Handle list format - could be list of lists or list of strings
+                for box in bounding_boxes:
+                    if isinstance(box, list) and len(box) == 4:
+                        # Already in correct format [x1, y1, x2, y2]
+                        parsed_bounding_boxes.append([int(coord) for coord in box])
+                    elif isinstance(box, str):
+                        # Parse individual string box
+                        try:
+                            coords = [float(x) for x in box.split(',')]
+                            if len(coords) == 4:
+                                parsed_bounding_boxes.append([int(coord) for coord in coords])
+                        except (ValueError, IndexError) as e:
+                            print(f"Warning: Invalid bounding box format: {box}, error: {e}")
+                            continue
+            else:
+                print(f"Warning: Unexpected bounding_boxes type: {type(bounding_boxes)}")
             
-            # If no bounding boxes provided, use default
-            if not bounding_boxes:
-                bounding_boxes = [[100, 100, 200, 200]]  # Default box
+            # If no valid bounding boxes provided, use default
+            if not parsed_bounding_boxes:
+                print("No valid bounding boxes provided, using default box")
+                parsed_bounding_boxes = [[100, 100, 200, 200]]  # Default box
+            
+            print(f"Processing {len(parsed_bounding_boxes)} bounding boxes: {parsed_bounding_boxes}")
             
             # Update status
             processing_status[upload_id]["progress"] = 10
             processing_status[upload_id]["status"] = "processing"
-            processing_status[upload_id]["message"] = f"Analyzing video for object removal ({len(bounding_boxes)} objects)..."
+            processing_status[upload_id]["message"] = f"Analyzing video for object removal ({len(parsed_bounding_boxes)} objects)..."
             
             # Get file paths
             file_path = Path(processing_status[upload_id]["file_path"])
@@ -52,6 +78,21 @@ class ObjectRemovalService:
             # Get video info for optimization decisions
             video_info = await self._get_video_info(str(file_path))
             processing_status[upload_id]["video_info"] = video_info
+            
+            # Validate and normalize bounding boxes
+            validated_bounding_boxes = []
+            for bbox in parsed_bounding_boxes:
+                if self._validate_bounding_box(bbox, video_info["width"], video_info["height"]):
+                    normalized_bbox = self._normalize_bounding_box(bbox, video_info["width"], video_info["height"])
+                    validated_bounding_boxes.append(normalized_bbox)
+                else:
+                    print(f"Warning: Invalid bounding box {bbox}, skipping")
+            
+            if not validated_bounding_boxes:
+                print("No valid bounding boxes after validation, using default box")
+                validated_bounding_boxes = [[100, 100, 200, 200]]
+            
+            print(f"Processing {len(validated_bounding_boxes)} validated bounding boxes: {validated_bounding_boxes}")
             
             # OPTIMIZATION: Determine frame sampling rate based on video length
             frame_sampling_rate = self._calculate_frame_sampling_rate(video_info["duration"])
@@ -67,7 +108,7 @@ class ObjectRemovalService:
             
             # OPTIMIZATION: Process frames in parallel batches
             processed_frames = await self._remove_objects_from_frames_parallel(
-                frames, bounding_boxes, processing_status, upload_id, video_info
+                frames, validated_bounding_boxes, processing_status, upload_id, video_info
             )
             
             processing_status[upload_id]["progress"] = 80
@@ -83,12 +124,12 @@ class ObjectRemovalService:
             processing_status[upload_id]["progress"] = 100
             processing_status[upload_id]["status"] = "completed"
             processing_status[upload_id]["output_path"] = str(output_path)
-            processing_status[upload_id]["removed_objects"] = bounding_boxes
+            processing_status[upload_id]["removed_objects"] = validated_bounding_boxes
             processing_status[upload_id]["optimization_info"] = {
                 "frame_sampling_rate": frame_sampling_rate,
                 "parallel_processing": True,
                 "memory_efficient": True,
-                "objects_removed": len(bounding_boxes)
+                "objects_removed": len(validated_bounding_boxes)
             }
             
         except Exception as e:
@@ -568,3 +609,42 @@ class ObjectRemovalService:
             "actual_frames_processed": actual_frames,
             "parallel_processing": True
         }
+
+    def _validate_bounding_box(self, bbox: list, video_width: int, video_height: int) -> bool:
+        """Validate bounding box coordinates"""
+        if len(bbox) != 4:
+            return False
+        
+        x1, y1, x2, y2 = bbox
+        
+        # Check if coordinates are within video bounds
+        if x1 < 0 or y1 < 0 or x2 > video_width or y2 > video_height:
+            return False
+        
+        # Check if box has positive dimensions
+        if x2 <= x1 or y2 <= y1:
+            return False
+        
+        # Check if box is not too small (minimum 10x10 pixels)
+        if (x2 - x1) < 10 or (y2 - y1) < 10:
+            return False
+        
+        return True
+
+    def _normalize_bounding_box(self, bbox: list, video_width: int, video_height: int) -> list:
+        """Normalize bounding box coordinates to video dimensions"""
+        x1, y1, x2, y2 = bbox
+        
+        # Ensure coordinates are within bounds
+        x1 = max(0, min(x1, video_width - 1))
+        y1 = max(0, min(y1, video_height - 1))
+        x2 = max(0, min(x2, video_width - 1))
+        y2 = max(0, min(y2, video_height - 1))
+        
+        # Ensure minimum size
+        if (x2 - x1) < 10:
+            x2 = min(x1 + 10, video_width - 1)
+        if (y2 - y1) < 10:
+            y2 = min(y1 + 10, video_height - 1)
+        
+        return [int(x1), int(y1), int(x2), int(y2)]
