@@ -652,7 +652,8 @@ async def process_ai_editing(request: Request):
             srt_path = subtitle_service.generate_subtitles_from_text(script_content, video_path)
             # Burn subtitles into video
             output_path = PROCESSED_DIR / f"{upload_id}_with_subtitles.mp4"
-            subtitle_service.burn_subtitles(video_path, srt_path, str(output_path))
+            result_path = subtitle_service.burn_subtitles(video_path, srt_path, str(output_path))
+            print(f"✅ Subtitle generation completed: {result_path}")
         
         # Count suggestions by type
         cut_suggestions = len([s for s in suggestions if hasattr(s, 'suggestion_type') and s.suggestion_type == "cut"])

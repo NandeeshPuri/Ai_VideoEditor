@@ -78,12 +78,12 @@ class SubtitleService:
                 # Burn subtitles into video
                 processing_status[upload_id]["progress"] = 85
                 output_path = output_dir / f"{upload_id}_with_subtitles.mp4"
-                self._burn_subtitles(str(file_path), str(srt_path), str(output_path))
+                result_path = self.burn_subtitles(str(file_path), str(srt_path), str(output_path))
                 
                 # Update status with video output
                 processing_status[upload_id]["progress"] = 100
                 processing_status[upload_id]["status"] = "completed"
-                processing_status[upload_id]["output_path"] = str(output_path)
+                processing_status[upload_id]["output_path"] = result_path
                 processing_status[upload_id]["srt_path"] = str(srt_path)
             else:
                 # Just return SRT file
@@ -228,44 +228,6 @@ class SubtitleService:
                 f.write(f"{segment['start_time']} --> {segment['end_time']}\n")
                 f.write(f"{segment['text']}\n\n")
     
-    def _burn_subtitles(self, video_path: str, srt_path: str, output_path: str):
-        """Burn subtitles into video using simple, working approach"""
-        try:
-            # Import ffmpeg-python for simple subtitle burning
-            import ffmpeg
-            
-            print(f"🔥 Burning subtitles from: {srt_path}")
-            print(f"🔥 Input video: {video_path}")
-            print(f"🔥 Output video: {output_path}")
-            
-            # Use ffmpeg-python for simple subtitle burning - the working approach from yesterday
-            # Input the video file
-            input_stream = ffmpeg.input(video_path)
-            
-            # Apply subtitle filter to video stream only
-            video_with_subtitles = ffmpeg.filter(input_stream, 'subtitles', srt_path,
-                                               force_style='FontSize=24,PrimaryColour=&HFFFFFF,BackColour=&H000000,Bold=1')
-            
-            # Output with both video (with subtitles) and audio (original)
-            stream = ffmpeg.output(video_with_subtitles, input_stream, output_path, 
-                                 vcodec='libx264', acodec='copy')
-            
-            # Run FFmpeg
-            print(f"🔧 Running ffmpeg-python subtitle burning...")
-            ffmpeg.run(stream, overwrite_output=True)
-            
-            # Verify output
-            if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
-                raise Exception("Subtitle burning failed - no output file created")
-            
-            print(f"✅ Subtitle burning successful with ffmpeg-python")
-            
-        except ImportError:
-            print("❌ ffmpeg-python not available, trying fallback method...")
-            self._burn_subtitles_fallback(video_path, srt_path, output_path)
-        except Exception as e:
-            print(f"❌ ffmpeg-python method failed: {e}")
-            self._burn_subtitles_fallback(video_path, srt_path, output_path)
     
     def _burn_subtitles_fallback(self, video_path: str, srt_path: str, output_path: str):
         """Fallback subtitle burning method using subprocess"""
@@ -391,6 +353,101 @@ class SubtitleService:
                 i += 1
         
         return segments
+    
+    def generate_subtitles_from_text(self, text_content: str, video_path: str) -> str:
+        """Generate SRT subtitles from text content"""
+        segments = self._parse_text_to_segments(text_content)
+        
+        # Generate SRT file path
+        srt_path = str(Path(video_path).parent / f"{Path(video_path).stem}_subtitles.srt")
+        
+        # Generate SRT content
+        srt_content = ""
+        for i, segment in enumerate(segments, 1):
+            start_time_str = self._seconds_to_srt_time(segment['start_time'])
+            end_time_str = self._seconds_to_srt_time(segment['end_time'])
+            
+            srt_content += f"{i}\n"
+            srt_content += f"{start_time_str} --> {end_time_str}\n"
+            srt_content += f"{segment['text']}\n\n"
+        
+        # Save SRT file
+        with open(srt_path, 'w', encoding='utf-8') as f:
+            f.write(srt_content)
+        
+        return srt_path
+    
+    def _parse_text_to_segments(self, text_content: str) -> list:
+        """Parse text content into subtitle segments"""
+        segments = []
+        lines = text_content.split('\n')
+        
+        current_time = 0.0
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            
+            # Estimate duration based on text length
+            duration = max(2.0, len(line) * 0.1)  # At least 2 seconds, 0.1s per character
+            
+            segments.append({
+                'start_time': current_time,
+                'end_time': current_time + duration,
+                'text': line
+            })
+            
+            current_time += duration
+        
+        return segments
+    
+    def _seconds_to_srt_time(self, seconds: float) -> str:
+        """Convert seconds to SRT time format (HH:MM:SS,mmm)"""
+        hours = int(seconds // 3600)
+        minutes = int((seconds % 3600) // 60)
+        secs = int(seconds % 60)
+        millisecs = int((seconds % 1) * 1000)
+        
+        return f"{hours:02d}:{minutes:02d}:{secs:02d},{millisecs:03d}"
+    
+    def burn_subtitles(self, video_path: str, srt_path: str, output_path: str) -> str:
+        """Burn subtitles into video using FFmpeg"""
+        try:
+            # Import ffmpeg-python for subtitle burning
+            import ffmpeg
+            
+            print(f"🔥 Burning subtitles from: {srt_path}")
+            print(f"🔥 Input video: {video_path}")
+            print(f"🔥 Output video: {output_path}")
+            
+            # Input the video file
+            input_stream = ffmpeg.input(video_path)
+            
+            # Apply subtitle filter to video stream
+            video_with_subtitles = ffmpeg.filter(input_stream, 'subtitles', srt_path,
+                                               force_style='FontSize=24,PrimaryColour=&HFFFFFF,BackColour=&H000000,Bold=1')
+            
+            # Output with both video (with subtitles) and audio (original)
+            stream = ffmpeg.output(video_with_subtitles, input_stream, output_path, 
+                                 vcodec='libx264', acodec='copy')
+            
+            # Run FFmpeg
+            print(f"🔧 Running ffmpeg-python subtitle burning...")
+            ffmpeg.run(stream, overwrite_output=True)
+            
+            # Verify output
+            if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
+                raise Exception("Subtitle burning failed - no output file created")
+            
+            print(f"✅ Subtitle burning successful with ffmpeg-python")
+            return output_path
+            
+        except ImportError:
+            print("❌ ffmpeg-python not available, trying fallback method...")
+            return self._burn_subtitles_fallback(video_path, srt_path, output_path)
+        except Exception as e:
+            print(f"❌ ffmpeg-python method failed: {e}")
+            return self._burn_subtitles_fallback(video_path, srt_path, output_path)
     
     def _parse_srt_for_burning(self, srt_content: str) -> list:
         """Parse SRT content for subtitle burning with timing information"""
