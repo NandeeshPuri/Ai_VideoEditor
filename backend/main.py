@@ -68,7 +68,7 @@ def get_service(service_name):
         from services.video_compilation import VideoCompilationService
         return VideoCompilationService()
     elif service_name == "ai_editing_suggestions":
-        from services.ai_editing_suggestions import AIEditingSuggestionsService
+        from services.ai_editing import AIEditingSuggestionsService
         return AIEditingSuggestionsService()
     elif service_name == "script_analysis":
         from services.script_analysis import ScriptAnalysisService
