@@ -518,7 +518,7 @@ class VideoAnalyzer:
                 return None
             
             video_hash = self._get_video_hash(video_path)
-            cache_file = self.config.cache_dir / f"{video_hash}.pkl"
+            cache_file = Path(self.config.cache_dir) / f"{video_hash}.pkl"
             
             if cache_file.exists():
                 import pickle
@@ -543,7 +543,7 @@ class VideoAnalyzer:
                 return
             
             video_hash = self._get_video_hash(video_path)
-            cache_file = self.config.cache_dir / f"{video_hash}.pkl"
+            cache_file = Path(self.config.cache_dir) / f"{video_hash}.pkl"
             
             import pickle
             with open(cache_file, 'wb') as f:

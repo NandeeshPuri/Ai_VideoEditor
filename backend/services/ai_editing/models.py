@@ -52,6 +52,7 @@ class AnalysisConfig:
     enable_cache: bool = True
     cache_compression: bool = True
     cache_ttl: int = 86400 * 7  # 7 days
+    cache_dir: str = "backend/temp/analysis_cache"  # Cache directory path
     timeline_analysis_enabled: bool = True
     advanced_audio_analysis: bool = True
     enable_optical_flow: bool = True
